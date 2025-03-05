@@ -1,0 +1,141 @@
+import csv
+import random
+import time
+import threading
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from datetime import datetime
+from flask import Flask, render_template, jsonify, send_file
+from io import BytesIO
+
+app = Flask(_name_)
+
+areas = ["Area A", "Area B", "Area C", "Area D", "Area E"]
+
+data_lock = threading.Lock()
+running = False
+current_data = {}
+
+# Initialize CSV file
+def init_csv():
+    with open("accidents.csv", "w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Area", "Speed", "Flip Degree", "Ground Contact", "Timestamp"])
+
+# Function to log accident data
+def log_accident(area, speed, flip_degree, ground_contact):
+    with open("accidents.csv", "a", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow([area, speed, flip_degree, ground_contact, datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+
+# Generate random accident data
+def generate_data():
+    data = {}
+    for area in areas:
+        speed = np.random.randint(0, 136)
+        flip_degree = np.random.randint(0, 181)
+        ground_contact = "No"
+        data[area] = {"Speed": speed, "Flip Degree": flip_degree, "Ground Contact": ground_contact}
+    return data
+
+# Detect accidents based on speed and flip degree
+def detect_anomaly(prev_speed, curr_speed, flip_degree):
+    return (prev_speed - curr_speed > 30) and (flip_degree > 35)
+
+# Update accident data dynamically
+def update_data():
+    global running, current_data
+    prev_speeds = {area: 100 for area in areas}  # Assume initial speeds are 100 km/h
+    while running:
+        with data_lock:
+            new_data = generate_data()
+            for area, values in new_data.items():
+                if detect_anomaly(prev_speeds[area], values["Speed"], values["Flip Degree"]):
+                    values["Ground Contact"] = "Yes"
+                    log_accident(area, values["Speed"], values["Flip Degree"], values["Ground Contact"])
+                prev_speeds[area] = values["Speed"]
+            current_data = new_data
+        time.sleep(5)
+
+# Start Monitoring
+@app.route('/start')
+def start_monitoring():
+    global running
+    if not running:
+        running = True
+        update_thread = threading.Thread(target=update_data)
+        update_thread.start()
+    return jsonify({"status": "started"})
+
+# Stop Monitoring and Generate Heatmap
+@app.route('/stop')
+def stop_monitoring():
+    global running
+    running = False
+    return jsonify({"status": "stopped", "heatmap": "/heatmap"})
+
+# Generate Heatmap
+@app.route('/heatmap')
+def generate_heatmap():
+    try:
+        df = pd.read_csv("accidents.csv", encoding="utf-8")
+        if df.empty:
+            return jsonify({"error": "No data available"}), 404
+        
+        pivot_table = df.pivot_table(index="Area", values="Speed", aggfunc="mean")
+        
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(pivot_table, annot=True, cmap="coolwarm", linewidths=0.5)
+        plt.title("Accident Heatmap (Average Speed per Area)")
+        
+        img = BytesIO()
+        plt.savefig(img, format="png")
+        img.seek(0)
+        
+        return send_file(img, mimetype='image/png')
+    except Exception as e:
+        return jsonify({"error": f"Error generating heatmap: {e}"}), 500
+
+# Fetch data from CSV
+@app.route('/get_data')
+def get_data():
+    try:
+        df = pd.read_csv("accidents.csv", encoding="utf-8")
+    except FileNotFoundError:
+        return jsonify({"error": "CSV file not found"}), 404
+    except Exception as e:
+        return jsonify({"error": f"Error reading CSV: {e}"}), 500
+
+    if df.empty:
+        return jsonify({"data": []})
+
+    return jsonify({"data": df.to_dict(orient="records")})
+
+# Train model
+@app.route('/train')
+def train():
+    try:
+        df = pd.read_csv("accidents.csv", encoding="utf-8")
+    except FileNotFoundError:
+        return jsonify({"error": "CSV file not found"}), 404
+    except Exception as e:
+        return jsonify({"error": f"Error reading CSV: {e}"}), 500
+
+    if df.empty:
+        return jsonify({"error": "No data available"}), 404
+
+    X_train, X_test, y_train, y_test = train_test_split(df.drop("Ground Contact", axis=1), df["Ground Contact"], test_size=0.2, random_state=42)
+
+    # Rest of your code
+    return jsonify({"status": "trained"})
+
+# Render main page
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+if _name_ == '_main_':
+    init_csv()
+    app.run(debug=True)
